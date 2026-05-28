@@ -1,0 +1,5 @@
+# Zip archives
+*.zip
+
+# macOS metadata
+.DS_Store
