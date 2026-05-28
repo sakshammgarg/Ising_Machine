@@ -3,12 +3,12 @@
 // Description: VGA 640x480 @ 60 Hz spin-state visualizer for Nexys A7.
 //
 //              Renders a 2D grid of spin cells.  Each cell is 16x16 pixels.
-//              For 32 spins: 8 columns × 4 rows of 16×16 cells = 128×64 px,
-//              centered on the 640×480 display.
+//              For 32 spins: 8 columns Ã— 4 rows of 16Ã—16 cells = 128Ã—64 px,
+//              centered on the 640Ã—480 display.
 //
 //              Color coding:
-//                  Spin +1 (1) → bright green  (R=0, G=F, B=0) in 4-bit VGA
-//                  Spin -1 (0) → bright red    (R=F, G=0, B=0) in 4-bit VGA
+//                  Spin +1 (1) â†’ bright green  (R=0, G=F, B=0) in 4-bit VGA
+//                  Spin -1 (0) â†’ bright red    (R=F, G=0, B=0) in 4-bit VGA
 //
 //              The Nexys A7 VGA connector uses 4-bit per channel (12-bit color).
 //
@@ -16,7 +16,7 @@
 //              This module uses a simple divide-by-4 clock divider internally
 //              and outputs pixel-clock-synchronous VGA signals.
 //
-// VGA 640×480 60Hz timing:
+// VGA 640Ã—480 60Hz timing:
 //   Horizontal: 96 sync + 48 back porch + 640 active + 16 front porch = 800
 //   Vertical:    2 sync +  33 back porch + 480 active + 10 front porch = 525
 //
@@ -121,20 +121,20 @@ module vga_visualizer #(
     // -----------------------------------------------------------------------
     // Spin grid hit-test
     // -----------------------------------------------------------------------
-    wire in_grid_x = (px >= GRID_X0) && (px < GRID_X_END);
-    wire in_grid_y = (py >= GRID_Y0) && (py < GRID_Y_END);
+    wire in_grid_x = (px >= (GRID_X0)) && (px < GRID_X_END);
+    wire in_grid_y = (py >= (GRID_Y0)) && (py < GRID_Y_END);
     wire in_grid   = in_grid_x && in_grid_y;
 
     // Which cell?
-    wire [3:0] cell_col = (px - GRID_X0) >> $clog2(CELL_SIZE); // 0..COLS-1
-    wire [3:0] cell_row = (py - GRID_Y0) >> $clog2(CELL_SIZE); // 0..ROWS-1
+    wire [3:0] cell_col = (px - (GRID_X0)) >> $clog2(CELL_SIZE); // 0..COLS-1
+    wire [3:0] cell_row = (py - (GRID_Y0)) >> $clog2(CELL_SIZE); // 0..ROWS-1
     wire [4:0] spin_idx = {1'b0, cell_row} * COLS[4:0] + {1'b0, cell_col};
 
     wire spin_val = spin_array[spin_idx]; // 1=+1 green, 0=-1 red
 
     // 1-pixel border: black
-    wire [3:0] cell_px_x = (px - GRID_X0) & (CELL_SIZE - 1);
-    wire [3:0] cell_px_y = (py - GRID_Y0) & (CELL_SIZE - 1);
+    wire [3:0] cell_px_x = (px - (GRID_X0)) & (CELL_SIZE - 1);
+    wire [3:0] cell_px_y = (py - (GRID_Y0)) & (CELL_SIZE - 1);
     wire border = (cell_px_x == 0) || (cell_px_y == 0) ||
                   (cell_px_x == (CELL_SIZE - 1)) || (cell_px_y == (CELL_SIZE - 1));
 
