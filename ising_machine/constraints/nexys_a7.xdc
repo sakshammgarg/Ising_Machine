@@ -81,16 +81,13 @@ set_property -dict { PACKAGE_PIN B12 IOSTANDARD LVCMOS33 } [get_ports { vga_vs }
 ## ----------------------------------------------------------------------------
 ## Timing Constraints
 ## ----------------------------------------------------------------------------
-## VGA pixel clock (derived from 100 MHz / 4 internally)
-## Relax setup/hold on VGA outputs since they are presentation-only
-set_output_delay -clock sys_clk_pin -max 0 [get_ports {vga_r[*] vga_g[*] vga_b[*] vga_hs vga_vs}]
-set_output_delay -clock sys_clk_pin -min 0 [get_ports {vga_r[*] vga_g[*] vga_b[*] vga_hs vga_vs}]
-
-## LED and UART outputs – relax timing (slow outputs)
-set_output_delay -clock sys_clk_pin -max 0 [get_ports {led[*]}]
-set_output_delay -clock sys_clk_pin -min 0 [get_ports {led[*]}]
-set_output_delay -clock sys_clk_pin -max 0 [get_ports {uart_txd_in}]
-set_output_delay -clock sys_clk_pin -min 0 [get_ports {uart_txd_in}]
+## LEDs, UART TX, and VGA are all asynchronous indicator outputs — no external
+## receiver clock exists to meet.  set_output_delay would add a false setup
+## requirement that the OBUF delay (3.5 ns at slow corner) cannot satisfy at
+## 100 MHz.  Use set_false_path to remove them from the timing analysis entirely.
+set_false_path -to [get_ports {led[*]}]
+set_false_path -to [get_ports {uart_txd_in}]
+set_false_path -to [get_ports {vga_r[*] vga_g[*] vga_b[*] vga_hs vga_vs}]
 
 ## ----------------------------------------------------------------------------
 ## Bitstream Configuration
