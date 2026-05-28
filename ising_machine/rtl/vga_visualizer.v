@@ -121,22 +121,22 @@ module vga_visualizer #(
     // -----------------------------------------------------------------------
     // Spin grid hit-test
     // -----------------------------------------------------------------------
-    wire in_grid_x = (px >= 10'(GRID_X0)) && (px < GRID_X_END);
-    wire in_grid_y = (py >= 10'(GRID_Y0)) && (py < GRID_Y_END);
+    wire in_grid_x = (px >= GRID_X0) && (px < GRID_X_END);
+    wire in_grid_y = (py >= GRID_Y0) && (py < GRID_Y_END);
     wire in_grid   = in_grid_x && in_grid_y;
 
     // Which cell?
-    wire [3:0] cell_col = (px - 10'(GRID_X0)) >> $clog2(CELL_SIZE); // 0..COLS-1
-    wire [3:0] cell_row = (py - 10'(GRID_Y0)) >> $clog2(CELL_SIZE); // 0..ROWS-1
+    wire [3:0] cell_col = (px - GRID_X0) >> $clog2(CELL_SIZE); // 0..COLS-1
+    wire [3:0] cell_row = (py - GRID_Y0) >> $clog2(CELL_SIZE); // 0..ROWS-1
     wire [4:0] spin_idx = {1'b0, cell_row} * COLS[4:0] + {1'b0, cell_col};
 
     wire spin_val = spin_array[spin_idx]; // 1=+1 green, 0=-1 red
 
     // 1-pixel border: black
-    wire [3:0] cell_px_x = (px - 10'(GRID_X0)) & 4'(CELL_SIZE - 1);
-    wire [3:0] cell_px_y = (py - 10'(GRID_Y0)) & 4'(CELL_SIZE - 1);
+    wire [3:0] cell_px_x = (px - GRID_X0) & (CELL_SIZE - 1);
+    wire [3:0] cell_px_y = (py - GRID_Y0) & (CELL_SIZE - 1);
     wire border = (cell_px_x == 0) || (cell_px_y == 0) ||
-                  (cell_px_x == 4'(CELL_SIZE - 1)) || (cell_px_y == 4'(CELL_SIZE - 1));
+                  (cell_px_x == (CELL_SIZE - 1)) || (cell_px_y == (CELL_SIZE - 1));
 
     // -----------------------------------------------------------------------
     // Color output
