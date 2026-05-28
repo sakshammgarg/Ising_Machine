@@ -52,11 +52,11 @@ module uart_debug #(
     endfunction
 
     // -----------------------------------------------------------------------
-    // Message buffer: "E=XXXXXXXX S=XXXXXXXX\r\n" = 22 bytes
+    // Message buffer: "E=XXXXXXXX S=XXXXXXXX\r\n" = 23 bytes
     // -----------------------------------------------------------------------
-    localparam MSG_LEN = 22;
+    localparam MSG_LEN = 23;
     reg [7:0] msg [0:MSG_LEN-1];
-    reg [4:0] msg_idx;   // 0..21
+    reg [4:0] msg_idx;   // 0..22
 
     // -----------------------------------------------------------------------
     // TX shift register (10-bit frame: start + 8 data + stop)
@@ -118,10 +118,7 @@ module uart_debug #(
                         msg[19] <= hex_ch(spins_in[ 7: 4]);
                         msg[20] <= hex_ch(spins_in[ 3: 0]);
                         msg[21] <= 8'h0D; // '\r'
-                        // Note: '\n' sent as extra byte after \r; handled below
-                        // Actually encode \r\n as bytes 20 and 21
-                        msg[20] <= 8'h0D; // '\r'
-                        msg[21] <= 8'h0A; // '\n'
+                        msg[22] <= 8'h0A; // '\n'
 
                         msg_idx <= 0;
                         state   <= ST_LOAD;

@@ -130,7 +130,7 @@ module energy_calculator #(
                 // Issue BRAM address for J[idx_i][idx_j]
                 S_ADDR: begin
                     // Flatten 2D address: row*N_SPINS + col
-                    j_rd_addr <= ({4'b0, idx_i} << $clog2(N_SPINS)) | {5'b0, idx_j};
+                    j_rd_addr <= ({5'b0, idx_i} << $clog2(N_SPINS)) | {5'b0, idx_j};
                     p_si      <= spin_array[idx_i];
                     p_sj      <= spin_array[idx_j];
                     state     <= S_WAIT;

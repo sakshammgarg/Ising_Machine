@@ -47,21 +47,18 @@ module vga_visualizer #(
 );
 
     // -----------------------------------------------------------------------
-    // Pixel clock: divide 100 MHz by 4 = 25 MHz (close to 25.175 MHz)
-    // For exact frequency use MMCM in actual hardware; this is functionally correct.
+    // Pixel clock enable: 100 MHz / 4 = 25 MHz enable pulse.
+    // Using an enable instead of a derived clock avoids the CDC issue that
+    // arises when a flip-flop output is used as a clock (no BUFG path).
     // -----------------------------------------------------------------------
     reg [1:0] clk_div;
-    reg       pclk;
 
     always @(posedge clk_100 or negedge rst_n) begin
-        if (!rst_n) begin
-            clk_div <= 0;
-            pclk    <= 0;
-        end else begin
-            clk_div <= clk_div + 1;
-            pclk    <= clk_div[1]; // 25 MHz toggle
-        end
+        if (!rst_n) clk_div <= 0;
+        else        clk_div <= clk_div + 1;
     end
+
+    wire pclk_en = (clk_div == 2'b11);
 
     // -----------------------------------------------------------------------
     // Horizontal and vertical counters
@@ -91,11 +88,11 @@ module vga_visualizer #(
     reg [9:0] hcount; // 0..799
     reg [9:0] vcount; // 0..524
 
-    always @(posedge pclk or negedge rst_n) begin
+    always @(posedge clk_100 or negedge rst_n) begin
         if (!rst_n) begin
             hcount <= 0;
             vcount <= 0;
-        end else begin
+        end else if (pclk_en) begin
             if (hcount == H_TOTAL_M1) begin
                 hcount <= 0;
                 if (vcount == V_TOTAL_M1)

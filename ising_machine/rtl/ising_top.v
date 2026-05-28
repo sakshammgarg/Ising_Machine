@@ -295,8 +295,13 @@ module ising_top #(
     // Init FSM sub-state
     reg [5:0]  init_edge;    // 0..N_EDGES-1
     reg        init_phase;   // 0=write J[i][j], 1=write J[j][i]
-    // edge_i/edge_j: declared at module scope (Verilog-2001 forbids decl in unnamed blocks)
-    reg [4:0]  edge_i, edge_j;
+    // Combinational edge endpoints — avoids non-blocking assignment latency bug
+    wire [4:0] cur_edge_i = init_edge[4:0];
+    wire [4:0] cur_edge_j = (init_edge == N_EDGES[5:0]-1) ? 5'd0 : init_edge[4:0] + 1;
+    // Latch for annealing_done: the pulse fires with sweep_done, but TS_CHECK
+    // only evaluates after uart_busy clears (~190k cycles later). Without a latch
+    // the FSM would never see annealing_done and loop forever.
+    reg        annealing_latch;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -311,8 +316,9 @@ module ising_top #(
             start_sweep_r <= 1'b0;
             energy_start_r<= 1'b0;
             uart_send_r   <= 1'b0;
-            init_edge     <= 0;
-            init_phase    <= 0;
+            init_edge       <= 0;
+            init_phase      <= 0;
+            annealing_latch <= 1'b0;
         end else begin
             // Default pulse resets
             j_wr_en_b      <= 1'b0;
@@ -322,52 +328,47 @@ module ising_top #(
             start_sweep_r  <= 1'b0;
             energy_start_r <= 1'b0;
             uart_send_r    <= 1'b0;
+            // Capture the one-cycle annealing_done pulse for use in TS_CHECK
+            if (annealing_done_w) annealing_latch <= 1'b1;
 
             case (top_state)
 
                 // -------------------------------------------------------
                 TS_RESET: begin
-                    // Wait for reset to deassert (btnC released)
-                    // rst_n going high triggers init
-                    init_edge  <= 0;
-                    init_phase <= 0;
-                    top_state  <= TS_INIT;
+                    init_edge       <= 0;
+                    init_phase      <= 0;
+                    annealing_latch <= 1'b0;
+                    top_state       <= TS_INIT;
                 end
 
                 // -------------------------------------------------------
                 // Load coupling matrix: 32-node ring J[i][(i+1)%32]=-1
+                // cur_edge_i/cur_edge_j are combinational from init_edge,
+                // so the address is correct on the same cycle as the write.
                 TS_INIT: begin
-                    // Write one entry per cycle
-                    // phase 0: write J[i][j]
-                    // phase 1: write J[j][i] (symmetry)
-                    // Compute i and j for ring edge init_edge
-                    edge_i <= init_edge[4:0];
-                    edge_j <= (init_edge == N_EDGES[5:0]-1) ? 5'd0 : init_edge[4:0] + 1;
+                    if (!init_phase) begin
+                        // Write J[i][j]
+                        j_wr_en_b   <= 1'b1;
+                        j_wr_addr_b <= {5'b0, cur_edge_i} * N_SPINS[9:0] + {5'b0, cur_edge_j};
+                        j_wr_data_b <= J_NEG1;
+                        init_phase  <= 1;
+                    end else begin
+                        // Write J[j][i] (symmetry)
+                        j_wr_en_b   <= 1'b1;
+                        j_wr_addr_b <= {5'b0, cur_edge_j} * N_SPINS[9:0] + {5'b0, cur_edge_i};
+                        j_wr_data_b <= J_NEG1;
+                        init_phase  <= 0;
 
-                        if (!init_phase) begin
-                            // Write J[edge_i][edge_j]
-                            j_wr_en_b   <= 1'b1;
-                            j_wr_addr_b <= {5'b0,edge_i} * N_SPINS[9:0] + {5'b0,edge_j};
-                            j_wr_data_b <= J_NEG1;
-                            init_phase  <= 1;
+                        if (init_edge == N_EDGES[5:0]-1) begin
+                            // All edges written; randomize spins using LFSR
+                            init_spins_r   <= rng_word[N_SPINS-1:0];
+                            init_load_r    <= 1'b1;
+                            start_anneal_r <= 1'b1;
+                            top_state      <= TS_SWEEP;
                         end else begin
-                            // Write J[edge_j][edge_i]
-                            j_wr_en_b   <= 1'b1;
-                            j_wr_addr_b <= {5'b0,edge_j} * N_SPINS[9:0] + {5'b0,edge_i};
-                            j_wr_data_b <= J_NEG1;
-                            init_phase  <= 0;
-
-                            if (init_edge == N_EDGES[5:0]-1) begin
-                                // All edges written; randomize spins using LFSR
-                                init_spins_r <= rng_word[N_SPINS-1:0];
-                                init_load_r  <= 1'b1;
-                                // Start annealing
-                                start_anneal_r <= 1'b1;
-                                top_state      <= TS_SWEEP;
-                            end else begin
-                                init_edge <= init_edge + 1;
-                            end
+                            init_edge <= init_edge + 1;
                         end
+                    end
                 end
 
                 // -------------------------------------------------------
@@ -401,7 +402,7 @@ module ising_top #(
                 // Check if annealing is done
                 TS_CHECK: begin
                     if (!uart_busy_w) begin
-                        if (annealing_done_w)
+                        if (annealing_latch)
                             top_state <= TS_DISPLAY;
                         else
                             top_state <= TS_SWEEP;
