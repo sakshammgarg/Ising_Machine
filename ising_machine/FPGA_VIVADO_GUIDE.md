@@ -280,119 +280,131 @@ Once the bitstream is loaded, verify normal operation using the board's peripher
 | Board Signal | Nexys A7 Component | Ising Machine Function |
 |---|---|---|
 | `clk` | 100 MHz oscillator (E3) | System clock |
-| `rst_n` | CPU RESET button (C12) | Active-low reset |
-| `sw[0]` | Slide switch SW0 | Start annealing |
-| `sw[1]` | Slide switch SW1 | Enable UART debug output |
-| `sw[2]` | Slide switch SW2 | Enable VGA visualizer |
-| `led[0]` | LD0 | Annealing in progress |
-| `led[7]` | LD7 | Annealing complete / solution ready |
-| `uart_tx` | USB-UART TX (D4) | Debug data stream |
-| `vga_*` | VGA connector | Spin state visualisation |
+| `btnC` | **Centre button BTNC (N17)** | Hold = reset; release = start |
+| `sw[0]` | Slide switch SW0 | Update mode bit 0 (see table below) |
+| `sw[1]` | Slide switch SW1 | Update mode bit 1 (see table below) |
+| `led[15:0]` | LD0 – LD15 | Live spin states for spins 0–15; freeze when annealing completes |
+| `uart_txd_in` | USB-UART TX (D4) | `E=XXXXXXXX S=XXXXXXXX\r\n` after each energy evaluation |
+| `vga_*` | VGA connector | Real-time 8 × 4 spin grid (always active) |
+
+> **Note:** The **CPU RESET** button at C12 is *not* connected to this design. Use the **centre button BTNC (N17)** only.
+
+### Update Mode Switch Table
+
+| SW1 | SW0 | Mode |
+|-----|-----|------|
+| 0 | 0 | Deterministic — `sign(h_eff)` |
+| 0 | 1 | Stochastic — random flip gated by temperature |
+| 1 | 0 | **Simulated annealing (recommended)** |
+| 1 | 1 | Deterministic (fallback) |
 
 ### Step-by-Step Verification
 
-1. **Reset the design**: Press the **CPU RESET** button briefly. All LEDs should go off.
-2. **Start annealing**: Flip **SW0** to the ON position. `LD0` should illuminate, indicating the annealer is running.
-3. **Monitor completion**: When `LD7` lights up, the annealer has converged.
-4. **Read UART output**:
-   - Connect a serial terminal (e.g., PuTTY, minicom, or `screen`) at **115200 baud, 8N1**.
-   - Flip **SW1** ON to enable UART debug mode.
-   - The current spin configuration and energy value will be transmitted.
+1. **Select simulated annealing mode**: Set SW1 = ON, SW0 = OFF before powering on.
+2. **Connect a serial terminal** (PuTTY, minicom, or `screen`) at **115200 baud, 8N1** before powering on so you don't miss early output.
    ```bash
    # Linux example
    screen /dev/ttyUSB1 115200
    ```
-5. **VGA visualisation**: Connect a VGA monitor, flip **SW2** ON to see a real-time grid display of spin states.
+3. **Power on / release reset**: The machine starts automatically when the board powers on (BTNC released = `rst_n` high). LEDs will show a flickering pattern — this is the live spin state changing each sweep.
+4. **Observe UART output**: Lines of the form `E=FFFFFFC0 S=AAAAAAAA` appear at roughly 500 lines/second. The energy field (first hex word, interpreted as a signed 32-bit integer) should trend negative over time.
+5. **Wait for convergence**: After approximately **22 seconds** the LEDs freeze into a stable pattern — this is the optimised spin configuration. UART output stops.
+6. **To restart**: Hold **BTNC (centre button)** until all LEDs reset to all-on (all spins = +1), then release. The machine immediately starts a fresh anneal with a new random initial state.
+7. **VGA visualisation**: If a monitor is connected the 8 × 4 spin grid is displayed at all times — no switch needed.
 
 ---
 
 ### 12a. Verify the Solution (Answer Quality)
 
-After the annealer completes (`LD7` lit), use the following methods to confirm that the reported solution is correct and of good quality.
+After the LEDs freeze, use the following methods to confirm the result.
 
 #### Method 1 — Parse the UART Output
 
-The UART debug stream (SW1 ON, 115200 baud) transmits two key fields after convergence:
+The UART transmits one line per sweep at **115200 baud, 8N1**:
 
 ```
-SPINS: <hex_value>   e.g.  SPINS: 0xA3F1
-ENERGY: <signed_decimal>   e.g.  ENERGY: -42
+E=FFFFFFC0 S=AAAAAAAA
 ```
 
-| Field | Meaning |
-|-------|---------|
-| `SPINS` | Bit-packed final spin configuration. Bit *i* = 1 → spin *i* is +1 (up); 0 → spin *i* is −1 (down). |
-| `ENERGY` | Final Ising Hamiltonian value **E = −Σ J_ij s_i s_j**. Lower (more negative) is better. |
+| Field | Bytes | Meaning |
+|-------|-------|---------|
+| `E=XXXXXXXX` | 10 | Energy as a **signed 32-bit hex** value (two's complement). `FFFFFFC0` = −64. |
+| `S=XXXXXXXX` | 10 | Spin configuration, bit-packed. Bit *i* = 1 → spin *i* is +1; bit *i* = 0 → spin *i* is −1. |
+| `\r\n` | 2 | Line terminator |
+
+**Decode the energy** from the last UART line before output stops:
+
+```python
+e_hex  = "FFFFFFC0"                  # copy from terminal
+e_uint = int(e_hex, 16)              # 4294967232
+e_signed = e_uint if e_uint < 2**31 else e_uint - 2**32   # −64
+print(f"Energy: {e_signed}")         # Energy: -64
+```
 
 **What to look for:**
-- `ENERGY` should be **negative** for a meaningful problem; a positive energy indicates the annealer is stuck.
-- Across multiple runs, the lowest observed `ENERGY` is the best candidate solution.
+- Energy should be **negative**. For the default 32-node anti-ferromagnetic ring the theoretical minimum is **−64**.
+- A positive energy means the annealer did not make progress — check switch settings and rerun.
 
 #### Method 2 — Cross-Check with the Python Simulation
 
-The Python behavioural model `sim/ising_sim.py` can independently solve the same problem and compute the energy for any spin configuration:
+Run the built-in test suite to confirm the reference solution for the same coupling graph:
 
 ```bash
-# 1. Run the Python simulation to obtain a reference solution
 python3 ising_machine/sim/ising_sim.py
-
-# 2. Feed the FPGA spin configuration into the energy checker
-#    (pass the hex spin value read from UART as the --spins argument)
-python3 ising_machine/sim/ising_sim.py --verify --spins 0xA3F1
 ```
 
-The script prints:
+The script runs 8 self-checking tests and prints:
+
 ```
-Reference best energy : -48
-FPGA reported energy  : -42
-Energy gap            : 6   (12.5 % above reference)
-Solution valid        : YES
+=== TEST 8: MAX-CUT on 32-node Ring (Production Test) ===
+  Theoretical minimum : -64
+  Best result found   : -64
+  ...
+  RESULTS: 16 PASSED  |  0 FAILED
+✓ ALL TESTS PASSED – Design is correct and FPGA-ready
 ```
 
-A **valid solution** meets both criteria:
-1. `Solution valid: YES` — the FPGA energy matches the spin configuration (no arithmetic error).
-2. Energy gap ≤ 10 % of the reference is considered high quality for a simulated annealing result.
+Compare the **theoretical minimum** printed by the script with the energy you read from UART. The FPGA's SA run uses `steps_per_decay = 32` (slower, higher-quality cooling than the simulator default), so the FPGA typically matches or exceeds the simulation quality.
 
 #### Method 3 — Manual Energy Calculation
 
-To hand-verify a small problem instance, compute the Ising energy directly:
+Compute the Ising energy by hand for a small example:
 
 ```
-E = -Σ_{i<j} J_ij · s_i · s_j
+E = −2 · Σ_{i<j} J_ij · s_i · s_j      (factor of 2 for symmetry)
 ```
 
-where:
-- `s_i ∈ {+1, −1}` — extract from the `SPINS` hex word (bit *i* = 1 → s_i = +1, bit *i* = 0 → s_i = −1).
-- `J_ij` — coupling weights loaded into `coupling_memory` (see `rtl/coupling_memory.v`).
+where `s_i = +1` if bit *i* of the `S=` hex word is 1, else `s_i = −1`.
 
-**Example for a 4-spin ring (J_01 = J_12 = J_23 = J_30 = −1):**
+**Example — 4-spin ring, J = −1 everywhere, SPINS = 0x5 = 0b0101:**
 
 ```
-SPINS: 0x5 = 0b0101  →  s = [+1, −1, +1, −1]
-E = −[(−1)(+1)(−1) + (−1)(−1)(+1) + (−1)(+1)(−1) + (−1)(−1)(+1)]
-  = −[(+1) + (+1) + (+1) + (+1)] = −4   ← ground state confirmed ✓
+s = [+1, −1, +1, −1]
+Edges: (0,1) si≠sj, (1,2) si≠sj, (2,3) si≠sj, (3,0) si≠sj
+Each edge: J·si·sj = (−1)(−1) = +1
+E = −2 · 4 · (+1) = −8   ← ground state for 4-node ring ✓
 ```
 
 #### Method 4 — Repeated Runs for Statistical Confidence
 
-Simulated annealing is stochastic; a single run may not find the ground state:
+Simulated annealing is stochastic; a single run may not always find the exact ground state:
 
-1. **Reset and re-run**: toggle SW0 OFF → ON to start a fresh anneal (the LFSR RNG reseeds on reset).
-2. **Record the `ENERGY` value** from UART each time.
-3. Run at least **10 trials** and record the minimum energy observed.
-4. Compare the best observed energy with the Python reference:
-   - Within 5 % → excellent.
-   - Within 15 % → acceptable.
-   - > 15 % worse → consider lowering the cooling rate (see `annealing_scheduler.v` parameters).
+1. Hold **BTNC** then release to start a fresh anneal (LFSR reseeds from hardware reset).
+2. Record the final energy from the last UART line.
+3. Repeat at least **5 trials** and take the minimum energy observed.
+4. Compare with the Python reference (−64 for the 32-node ring):
+   - Within 5 % → excellent
+   - Within 15 % → acceptable
+   - \> 15 % worse → reduce the cooling rate by increasing `ALPHA` or `STEPS_PER_DECAY` in `annealing_scheduler.v`
 
 #### Verification Checklist
 
 | Check | Pass Criterion |
 |-------|---------------|
-| `LD7` illuminates | Annealer converged within the allotted steps |
-| `ENERGY` is negative | Problem is non-trivial and annealer found a feasible solution |
-| Python `--verify` reports `Solution valid: YES` | FPGA energy arithmetic is correct |
-| Energy gap ≤ 10 % vs. Python reference | High-quality solution found |
+| LEDs flicker during annealing, then freeze | FSM reached `TS_DISPLAY` — annealing converged |
+| Final `E=` value is negative | Annealer found a feasible solution |
+| Energy ≤ −54 (within 15 % of −64) | High-quality solution for the 32-node ring |
+| Python test suite: all 16 tests pass | Reference model confirms RTL correctness |
 | Best energy stable across ≥ 5 runs | Annealing schedule is adequate |
 
 ---
@@ -439,7 +451,9 @@ Based on the design targeting the Nexys A7-100T (XC7A100T):
 | `No hardware target open` | Check USB cable; install Digilent USB-JTAG driver; try a different USB port |
 | DONE LED stays off after programming | Cycle board power; re-program; verify correct `.bit` file is selected |
 | UART output garbled | Confirm baud rate is exactly **115200**; check the correct COM/ttyUSB port |
-| VGA shows no image | Confirm VGA cable is connected **before** the FPGA is programmed; toggle SW2 |
+| VGA shows no image | Confirm VGA cable is connected before powering on; VGA is always active — no switch required |
+| Pressing CPU RESET (C12) has no effect | Correct — C12 is not wired in this design. Use the **centre button BTNC (N17)** to reset |
+| LEDs never freeze / annealing never ends | Verify SW1=ON, SW0=OFF for simulated annealing mode; convergence takes ~22 s |
 
 ### Re-running a Clean Build
 
