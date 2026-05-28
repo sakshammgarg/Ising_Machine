@@ -83,9 +83,8 @@ module spin_update_engine #(
     reg signed [ACC_WIDTH-1:0] h_eff;
     reg                        proposed; // scratch bit for SA mode decision
 
-    // Pipeline registers
-    reg [$clog2(N_SPINS)-1:0] col_j_p1; // col_j delayed 1 cycle for BRAM latency
-    reg                        col_j_p1_valid;
+    // col_j_p1: tracks which column's BRAM data is currently available
+    reg [$clog2(N_SPINS)-1:0] col_j_p1;
 
     // Bias extraction
     wire signed [H_WIDTH-1:0] h_bias;
@@ -95,7 +94,7 @@ module spin_update_engine #(
     wire signed [J_WIDTH-1:0] j_signed;
     assign j_signed = $signed(j_rd_data);
 
-    // Current spin value at column j (pipeline delayed)
+    // Spin value for the column whose BRAM data is now available
     wire s_j;
     assign s_j = spin_array[col_j_p1];
 
@@ -104,131 +103,105 @@ module spin_update_engine #(
     // -----------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state           <= S_IDLE;
-            sweep_done      <= 1'b0;
-            spin_i          <= 0;
-            col_j           <= 0;
-            col_j_p1        <= 0;
-            col_j_p1_valid  <= 1'b0;
-            h_eff           <= 0;
-            spin_wr_en      <= 1'b0;
-            spin_wr_addr    <= 0;
-            spin_wr_data    <= 1'b1;
-            j_rd_addr       <= 0;
-        end else begin
+            state        <= S_IDLE;
             sweep_done   <= 1'b0;
+            spin_i       <= 0;
+            col_j        <= 0;
+            col_j_p1     <= 0;
+            h_eff        <= 0;
             spin_wr_en   <= 1'b0;
+            spin_wr_addr <= 0;
+            spin_wr_data <= 1'b1;
+            j_rd_addr    <= 0;
+        end else begin
+            sweep_done <= 1'b0;
+            spin_wr_en <= 1'b0;
 
             case (state)
 
                 // -----------------------------------------------------------
                 S_IDLE: begin
                     if (start_sweep) begin
-                        spin_i         <= 0;
-                        col_j          <= 0;
-                        col_j_p1_valid <= 1'b0;
-                        h_eff          <= 0;
-                        state          <= S_MAC_ADDR;
+                        spin_i <= 0;
+                        col_j  <= 0;
+                        h_eff  <= 0;
+                        state  <= S_MAC_ADDR;
                     end
                 end
 
                 // -----------------------------------------------------------
-                // Issue BRAM address: J[spin_i][col_j]
+                // Issue BRAM address for J[spin_i][col_j]; col_j_p1 tracks
+                // which column's result will be ready after S_MAC_WAIT.
                 S_MAC_ADDR: begin
-                    j_rd_addr      <= ({5'b0, spin_i} << $clog2(N_SPINS)) | {5'b0, col_j};
-                    col_j_p1       <= col_j;
-                    col_j_p1_valid <= 1'b1;
-                    col_j          <= col_j + 1;
-                    state          <= S_MAC_WAIT;
+                    j_rd_addr <= ({5'b0, spin_i} << $clog2(N_SPINS)) | {5'b0, col_j};
+                    col_j_p1  <= col_j;
+                    col_j     <= col_j + 1;
+                    state     <= S_MAC_WAIT;
                 end
 
                 // -----------------------------------------------------------
-                // Wait 1 cycle for BRAM registered output
+                // Wait one cycle for BRAM registered output — no prefetch.
+                // (Previous pipeline prefetch in S_MAC_WAIT updated col_j_p1
+                // before the BRAM result for the issued address was ready,
+                // causing h_eff to multiply J[i][k] by s[k+1] instead of s[k].)
                 S_MAC_WAIT: begin
-                    // Issue next address while waiting (pipeline overlap)
-                    if (col_j_p1_valid && col_j < N_SPINS[$clog2(N_SPINS)-1:0]) begin
-                        j_rd_addr <= ({5'b0, spin_i} << $clog2(N_SPINS)) | {5'b0, col_j};
-                        col_j_p1  <= col_j;
-                        col_j     <= col_j + 1;
-                    end
                     state <= S_MAC_ACC;
                 end
 
                 // -----------------------------------------------------------
-                // Accumulate: h_eff += J[spin_i][col_j_p1] * s[col_j_p1]
-                // s[j]=1 → signed_s=+1 → h_eff += J
-                // s[j]=0 → signed_s=-1 → h_eff -= J
+                // Accumulate J[spin_i][col_j_p1] * sign(s[col_j_p1]).
+                // If more columns remain, issue the next address and loop
+                // back through S_MAC_WAIT; otherwise proceed to S_DECIDE.
                 S_MAC_ACC: begin
-                    if (col_j_p1_valid) begin
-                        if (s_j)
-                            h_eff <= h_eff + {{(ACC_WIDTH-J_WIDTH){j_signed[J_WIDTH-1]}}, j_signed};
-                        else
-                            h_eff <= h_eff - {{(ACC_WIDTH-J_WIDTH){j_signed[J_WIDTH-1]}}, j_signed};
-                    end
+                    if (s_j)
+                        h_eff <= h_eff + {{(ACC_WIDTH-J_WIDTH){j_signed[J_WIDTH-1]}}, j_signed};
+                    else
+                        h_eff <= h_eff - {{(ACC_WIDTH-J_WIDTH){j_signed[J_WIDTH-1]}}, j_signed};
 
-                    if (col_j < N_SPINS[$clog2(N_SPINS)-1:0]) begin
-                        // Still more columns to process
-                        j_rd_addr      <= ({5'b0, spin_i} << $clog2(N_SPINS)) | {5'b0, col_j};
-                        col_j_p1       <= col_j;
-                        col_j          <= col_j + 1;
-                        col_j_p1_valid <= 1'b1;
-                        // Stay in MAC_ACC to pipeline
+                    if (col_j_p1 == N_SPINS - 1) begin
+                        // Last column accumulated — move to decision stage
+                        state <= S_DECIDE;
                     end else begin
-                        // All columns done, process last pending BRAM result next cycle
-                        col_j_p1_valid <= 1'b0;
-                        state          <= S_DECIDE;
+                        // Issue next address and wait for its result
+                        j_rd_addr <= ({5'b0, spin_i} << $clog2(N_SPINS)) | {5'b0, col_j};
+                        col_j_p1  <= col_j;
+                        col_j     <= col_j + 1;
+                        state     <= S_MAC_WAIT;
                     end
                 end
 
                 // -----------------------------------------------------------
-                // Apply update rule: new spin = sign(h_eff + h_bias)
                 S_DECIDE: begin
-                    // Add bias term
-                    // h_eff is already accumulated; add scalar bias
-                    // Re-use h_eff register for final field
                     h_eff <= h_eff + {{(ACC_WIDTH-H_WIDTH){h_bias[H_WIDTH-1]}}, h_bias};
                     state <= S_WRITEBACK;
                 end
 
                 // -----------------------------------------------------------
-                // Write new spin value back to spin memory
                 S_WRITEBACK: begin
                     spin_wr_addr <= spin_i;
                     spin_wr_en   <= 1'b1;
 
                     case (mode)
                         2'd0: begin
-                            // Deterministic: sign(h_eff)
-                            // h_eff > 0 → spin=1(+1), h_eff <= 0 → spin=0(-1)
                             spin_wr_data <= (h_eff > 0) ? 1'b1 : 1'b0;
                         end
                         2'd1: begin
-                            // Stochastic: flip current spin with prob ∝ temperature
-                            // Simple rule: if rng low bit set AND accept_flip → flip
                             if (accept_flip && rng_word[0])
                                 spin_wr_data <= ~spin_array[spin_i];
                             else
                                 spin_wr_data <= (h_eff > 0) ? 1'b1 : 1'b0;
                         end
                         2'd2: begin
-                            // Simulated annealing:
-                            // ΔE < 0 (field agrees with spin) → always accept sign(h_eff)
-                            // ΔE > 0 (field disagrees) → accept probabilistically via accept_flip
-                            // proposed is declared at module scope (Verilog forbids decl in unnamed blocks)
                             proposed = (h_eff > 0) ? 1'b1 : 1'b0;
-                            if (proposed != spin_array[spin_i]) begin
-                                // Energy-increasing flip: accept probabilistically
+                            if (proposed != spin_array[spin_i])
                                 spin_wr_data <= accept_flip ? proposed : spin_array[spin_i];
-                            end else begin
+                            else
                                 spin_wr_data <= proposed;
-                            end
                         end
                         default: spin_wr_data <= (h_eff > 0) ? 1'b1 : 1'b0;
                     endcase
 
-                    // Advance to next spin
-                    if (spin_i == N_SPINS[$clog2(N_SPINS)-1:0] - 1) begin
-                        // Sweep complete
+                    if (spin_i == N_SPINS - 1) begin
                         spin_i     <= 0;
                         sweep_done <= 1'b1;
                         state      <= S_IDLE;
@@ -236,7 +209,6 @@ module spin_update_engine #(
                         spin_i <= spin_i + 1;
                         col_j  <= 0;
                         h_eff  <= 0;
-                        col_j_p1_valid <= 1'b0;
                         state  <= S_MAC_ADDR;
                     end
                 end
